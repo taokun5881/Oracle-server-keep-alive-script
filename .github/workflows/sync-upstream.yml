@@ -1,0 +1,45 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: main
+      UPSTREAM_REPO: spiritLHLS/Oracle-server-keep-alive-script
+      UPSTREAM_BRANCH: main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" || git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}" --prune
+      - shell: bash
+        run: |
+          set -euo pipefail
+          backup_dir="$RUNNER_TEMP/local-workflows"
+          mkdir -p "$backup_dir"
+          [ -d .github/workflows ] && cp -a .github/workflows/. "$backup_dir/" || true
+          git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp -a "$backup_dir/." .github/workflows/ || true
+          git add -A .github/workflows
+          git diff --cached --quiet || git commit -m "ci: keep local workflows after upstream sync"
+      - run: git push origin "HEAD:${TARGET_BRANCH}"
+      - run: git push --tags origin
