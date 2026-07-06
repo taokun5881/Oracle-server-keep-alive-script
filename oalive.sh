@@ -1,311 +1,885 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # by spiritlhl
 # from https://github.com/spiritLHLS/Oracle-server-keep-alive-script
 
-ver="2023.03.06.12.44"
-_red() { echo -e "\033[31m\033[01m$@\033[0m"; }
-_green() { echo -e "\033[32m\033[01m$@\033[0m"; }
-_yellow() { echo -e "\033[33m\033[01m$@\033[0m"; }
-_blue() { echo -e "\033[36m\033[01m$@\033[0m"; }
-reading(){ read -rp "$(_green "$1")" "$2"; }
-RED="\033[31m"
-PLAIN="\033[0m"
-REGEX=("debian" "ubuntu" "centos|red hat|kernel|oracle linux|alma|rocky" "'amazon linux'" "fedora" "arch")
-RELEASE=("Debian" "Ubuntu" "CentOS" "CentOS" "Fedora" "Arch")
-PACKAGE_UPDATE=("! apt-get update && apt-get --fix-broken install -y && apt-get update" "apt-get update" "yum -y update" "yum -y update" "yum -y update" "pacman -Sy")
-PACKAGE_INSTALL=("apt-get -y install" "apt-get -y install" "yum -y install" "yum -y install" "yum -y install" "pacman -Sy --noconfirm --needed")
-PACKAGE_REMOVE=("apt-get -y remove" "apt-get -y remove" "yum -y remove" "yum -y remove" "yum -y remove" "pacman -Rsc --noconfirm")
-PACKAGE_UNINSTALL=("apt-get -y autoremove" "apt-get -y autoremove" "yum -y autoremove" "yum -y autoremove" "yum -y autoremove" "")
-CMD=("$(grep -i pretty_name /etc/os-release 2>/dev/null | cut -d \" -f2)" "$(hostnamectl 2>/dev/null | grep -i system | cut -d : -f2)" "$(lsb_release -sd 2>/dev/null)" "$(grep -i description /etc/lsb-release 2>/dev/null | cut -d \" -f2)" "$(grep . /etc/redhat-release 2>/dev/null)" "$(grep . /etc/issue 2>/dev/null | cut -d \\ -f1 | sed '/^[ ]*$/d')" "$(grep -i pretty_name /etc/os-release 2>/dev/null | cut -d \" -f2)") 
-SYS="${CMD[0]}"
-[[ -n $SYS ]] || exit 1
-for ((int = 0; int < ${#REGEX[@]}; int++)); do
-    if [[ $(echo "$SYS" | tr '[:upper:]' '[:lower:]') =~ ${REGEX[int]} ]]; then
-        SYSTEM="${RELEASE[int]}"
-        [[ -n $SYSTEM ]] && break
-    fi
-done
+ver="2026.06.01.00.00"
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
 
-[[ $EUID -ne 0 ]] && echo -e "${RED}请使用 root 用户运行本脚本！${PLAIN}" && exit 1
+BASE_URL=${OALIVE_BASE_URL:-https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main}
+INSTALL_DIR=${OALIVE_INSTALL_DIR:-/usr/local/bin}
+CONFIG_DIR=${OALIVE_CONFIG_DIR:-/etc/oalive}
+CONFIG_FILE=${OALIVE_CONFIG:-$CONFIG_DIR/oalive.conf}
+ENABLED_FILE=${OALIVE_ENABLED_CONFIG:-$CONFIG_DIR/enabled.conf}
+LOG_DIR=${OALIVE_LOG_DIR:-/var/log/oalive}
+STATE_DIR=${OALIVE_STATE_DIR:-/var/lib/oalive}
+RUN_DIR=${OALIVE_RUN_DIR:-/tmp}
+SYSTEMD_DIR=${OALIVE_SYSTEMD_DIR:-/etc/systemd/system}
+DOWNLOAD_TIMEOUT=${OALIVE_DOWNLOAD_TIMEOUT:-30}
+CRON_BEGIN="# OALIVE BEGIN"
+CRON_END="# OALIVE END"
 
-checkver(){
-  running_version=$(grep "ver=\"[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}" "$0" | awk -F '"' '{print $2}')
-  curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh -o oalive1.sh && chmod +x oalive1.sh
-  downloaded_version=$(grep "ver=\"[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}" oalive1.sh | awk -F '"' '{print $2}')
-  if [ "$running_version" != "$downloaded_version" ]; then
-    _yellow "更新脚本从 $ver 到 $downloaded_version"
-    mv oalive1.sh "$0"
-    uninstall
-    _yellow "5秒后请重新设置占用，已自动卸载原有占用"
-    sleep 5
-    bash oalive.sh
+CPU_ENABLED=0
+MEMORY_ENABLED=0
+BANDWIDTH_ENABLED=0
+CPU_QUOTA_PERCENT=
+MEMORY_TARGET_PERCENT=25
+MEMORY_HOLD_SECONDS=300
+MEMORY_REST_SECONDS=300
+MEMORY_MAX_MB=0
+BANDWIDTH_MODE=wget
+BANDWIDTH_INTERVAL_MINUTES=45
+BANDWIDTH_DURATION_MINUTES=6
+BANDWIDTH_RATE_PERCENT=30
+BANDWIDTH_RATE_MBPS=auto
+BANDWIDTH_DEFAULT_MBPS=10
+BANDWIDTH_SPEEDTEST_COUNT=10
+SPEEDTEST_GO_BIN=/etc/speedtest-cli/speedtest-go
+SCHEDULER=auto
+PKG_MANAGER=
+OS_NAME=
+OS_KERNEL=
+SCRIPT_DIR=.
+
+if [ -n "${ZSH_VERSION:-}" ]; then
+  setopt NO_NOMATCH 2>/dev/null || true
+fi
+
+setup_script_dir() {
+  case $0 in
+    */*) SCRIPT_DIR=$(CDPATH='' cd "$(dirname "$0")" 2>/dev/null && pwd -P || printf '%s\n' ".") ;;
+    *) SCRIPT_DIR=$(pwd -P 2>/dev/null || pwd) ;;
+  esac
+}
+
+color() {
+  code=$1
+  shift
+  if [ -t 1 ]; then
+    printf '\033[%sm%s\033[0m\n' "$code" "$*"
   else
-    _green "本脚本已是最新脚本无需更新"
-    rm oalive1.sh
+    printf '%s\n' "$*"
   fi
 }
 
-checkupdate(){
-	    _yellow "Updating package management sources"
-		  ${PACKAGE_UPDATE[int]} > /dev/null 2>&1
+info() { color "32;1" "$1 / $2"; }
+warn() { color "33;1" "$1 / $2"; }
+err() { color "31;1" "$1 / $2" >&2; }
+note() { color "36;1" "$1 / $2"; }
+
+is_uint() {
+  case ${1:-} in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
-boinc() {
-    _green "\n Install docker.\n "
-    if ! systemctl is-active docker >/dev/null 2>&1; then
-        if [ $SYSTEM = "CentOS" ]; then
-          ${PACKAGE_INSTALL[int]} yum-utils
-          yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &&
-          ${PACKAGE_INSTALL[int]} docker-ce docker-ce-cli containerd.io
-          systemctl enable --now docker
-        else
-          ${PACKAGE_INSTALL[int]} docker.io
-        fi
-    fi
-    docker ps -a | awk '{print $NF}' | grep -qw boinc && _yellow " Remove the boinc container.\n " && docker rm -f boinc >/dev/null 2>&1
-    if [ "$SYSTEM" == "Ubuntu" ] || [ "$SYSTEM" == "Debian" ]; then
-      docker run -d --restart unless-stopped --name boinc -v /var/lib/boinc:/var/lib/boinc -e "BOINC_CMD_LINE_OPTIONS=--allow_remote_gui_rpc --cpu_usage_limit=20" boinc/client
-    elif [ "$SYSTEM" == "Centos" ] ; then
-      docker run -d --restart unless-stopped --name boinc -v /var/lib/boinc:/var/lib/boinc -e "BOINC_CMD_LINE_OPTIONS=--allow_remote_gui_rpc --cpu_usage_limit=20" boinc/client:centos
-    else
-      echo "Error: The operating system is not supported."
-      exit 1
-    fi
-    systemctl enable docker
-    _green "CPU限制安装成功"
-    _green "Boinc is installed as docker and using"
+is_number() {
+  awk -v n="${1:-}" 'BEGIN {exit (n ~ /^[0-9]+([.][0-9]+)?$/ ? 0 : 1)}'
 }
 
-calculate() {
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/cpu-limit.sh -o cpu-limit.sh && chmod +x cpu-limit.sh
-    mv cpu-limit.sh /usr/local/bin/cpu-limit.sh 
-    chmod +x /usr/local/bin/cpu-limit.sh
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/cpu-limit.service -o cpu-limit.service && chmod +x cpu-limit.service
-    mv cpu-limit.service /etc/systemd/system/cpu-limit.service
-    line_number=7
-    total_cores=0
-    if [ -f "/proc/cpuinfo" ]; then
-      total_cores=$(grep -c ^processor /proc/cpuinfo)
-    else
-      total_cores=$(nproc)
-    fi
-    if [ "$total_cores" == "2" ] || [ "$total_cores" == "3" ] || [ "$total_cores" == "4" ]; then
-      cpu_limit=$(echo "$total_cores * 15" | bc)
-    else
-      cpu_limit=25
-    fi
-    sed -i "${line_number}a CPUQuota=${cpu_limit}%" /etc/systemd/system/cpu-limit.service
-    systemctl daemon-reload
-    systemctl enable cpu-limit.service
-    if systemctl start cpu-limit.service ; then
-      _green "CPU限制安装成功 脚本路径: /usr/local/bin/cpu-limit.sh"
-    else
-      restorecon /etc/systemd/system/cpu-limit.service
-      systemctl enable cpu-limit.service
-      systemctl start cpu-limit.service
-      _green "CPU限制安装成功 脚本路径: /usr/local/bin/cpu-limit.sh"
-    fi
-    _green "The CPU limit script has been installed at /usr/local/bin/cpu-limit.sh"
+sq() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-memory(){
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/memory-limit.sh -o memory-limit.sh && chmod +x memory-limit.sh
-    mv memory-limit.sh /usr/local/bin/memory-limit.sh
-    chmod +x /usr/local/bin/memory-limit.sh
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/memory-limit.service -o memory-limit.service && chmod +x memory-limit.service
-    mv memory-limit.service /etc/systemd/system/memory-limit.service
-    systemctl daemon-reload
-    systemctl enable memory-limit.service
-    if systemctl start memory-limit.service ; then
-      _green "内存限制安装成功 脚本路径: /usr/local/bin/memory-limit.sh" 
-    else
-      restorecon /etc/systemd/system/memory-limit.service
-      systemctl enable memory-limit.service
-      systemctl start memory-limit.service
-      _green "内存限制安装成功 脚本路径: /usr/local/bin/memory-limit.sh" 
-    fi
-    _green "The memory limit script has been installed at /usr/local/bin/memory-limit.sh"
+cron_escape() {
+  printf '%s' "$1" | sed 's/%/\\%/g'
 }
 
-bandwidth(){
-    if ! command -v speedtest-cli > /dev/null 2>&1; then
-      echo "speedtest-cli not found, installing..."
-      _yellow "Installing speedtest-cli"
-      rm /etc/apt/sources.list.d/speedtest.list >/dev/null 2>&1
-      ${PACKAGE_REMOVE[int]} speedtest > /dev/null 2>&1
-      ${PACKAGE_REMOVE[int]} speedtest-cli > /dev/null 2>&1
-      checkupdate
-      ${PACKAGE_INSTALL[int]} speedtest-cli
-    fi
-    if ! command -v speedtest-cli > /dev/null 2>&1; then
-      ARCH=$(uname -m)
-      if [[ "$ARCH" == "armv7l" || "$ARCH" == "armv8" || "$ARCH" == "armv8l" || "$ARCH" == "aarch64" ]]; then
-        FILE_URL="https://github.com/showwin/speedtest-go/releases/download/v1.5.2/speedtest-go_1.5.2_Linux_arm64.tar.gz"
-      elif [[ $ARCH == "i386" ]]; then
-        FILE_URL="https://github.com/showwin/speedtest-go/releases/download/v1.5.2/speedtest-go_1.5.2_Linux_i386.tar.gz"
-      elif [[ $ARCH == "x86_64" ]]; then
-        FILE_URL="https://github.com/showwin/speedtest-go/releases/download/v1.5.2/speedtest-go_1.5.2_Linux_x86_64.tar.gz"
-      else
-        _red "不支持该架构：$ARCH"
-        exit 1
-      fi
-      wget -q -O speedtest-go_1.5.2_Linux.tar.gz $FILE_URL
-      if ! command -v tar > /dev/null 2>&1; then
-        yum install -y tar
-      fi
-      chmod 777 speedtest-go_1.5.2_Linux.tar.gz
-      tar -xvf speedtest-go_1.5.2_Linux.tar.gz
-      chmod 777 speedtest-go
-      mv speedtest-go /usr/local/bin/ 
-      rm -rf README.md LICENSE > /dev/null 2>&1
-      rm -rf speedtest-go_1.5.2_Linux.tar.gz > /dev/null 2>&1
-    fi
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/bandwidth_occupier.sh -o bandwidth_occupier.sh && chmod +x bandwidth_occupier.sh
-    mv bandwidth_occupier.sh /usr/local/bin/bandwidth_occupier.sh
-    chmod +x /usr/local/bin/bandwidth_occupier.sh
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/bandwidth_occupier.timer -o bandwidth_occupier.timer && chmod +x bandwidth_occupier.timer
-    mv bandwidth_occupier.timer /etc/systemd/system/bandwidth_occupier.timer
-    curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/bandwidth_occupier.service -o bandwidth_occupier.service && chmod +x bandwidth_occupier.service
-    mv bandwidth_occupier.service /etc/systemd/system/bandwidth_occupier.service
-    reading "需要自定义带宽占用的设置吗? (y/[n]) " answer
-    if [ "$answer" == "y" ]; then
-        sed -i '/^bandwidth\|^rate/s/^/#/' /usr/local/bin/bandwidth_occupier.sh
-        reading "输入你需要的带宽大小(以mbps为单位，例如10mbps输入10): " rate_mbps
-	rate=$(( rate_mbps * 1000000 ))
-        reading "输入你需要请求的时长(以分钟为单位，例如10分钟输入10m): " timeout
-	sed -i 's/^timeout/#timeout/' /usr/local/bin/bandwidth_occupier.sh
-        sed -i '$ a\timeout '$timeout' wget $selected_url --limit-rate='$rate' -O /dev/null &' /usr/local/bin/bandwidth_occupier.sh
-	reading "输入你需要间隔的时长(以分钟为单位，例如45分钟输入45): " interval
-        sed -i "s/^OnUnitActiveSec.*/OnUnitActiveSec=$interval/" /etc/systemd/system/bandwidth_occupier.timer
-    else
-        _green "\n使用默认配置，45分钟间隔，请求10分钟，请求速率为最大速度的20%" 
-    fi
-    systemctl daemon-reload
-    systemctl enable bandwidth_occupier.timer
-    if systemctl start bandwidth_occupier.timer ; then
-      _green "带宽限制安装成功 脚本路径: /usr/local/bin/bandwidth_occupier.sh"
-    else
-      restorecon /etc/systemd/system/bandwidth_occupier.timer
-      restorecon /etc/systemd/system/bandwidth_occupier.service
-      systemctl enable bandwidth_occupier.timer
-      systemctl start bandwidth_occupier.timer
-      _green "带宽限制安装成功 脚本路径: /usr/local/bin/bandwidth_occupier.sh"
-    fi
-    _green "The bandwidth limit script has been installed at /usr/local/bin/bandwidth_occupier.sh"
-}
-
-uninstall(){
-    docker stop boinc &> /dev/null  
-    docker rm boinc &> /dev/null    
-    docker rmi boinc &> /dev/null   
-    if [ -f "/etc/systemd/system/cpu-limit.service" ]; then
-        systemctl stop cpu-limit.service
-        systemctl disable cpu-limit.service
-        rm /etc/systemd/system/cpu-limit.service
-        rm /usr/local/bin/cpu-limit.sh
-	      kill $(pgrep dd) &> /dev/null  
-	      kill $(ps -efA | grep cpu-limit.sh | awk '{print $2}') &> /dev/null  
-    fi
-    rm -rf /tmp/cpu-limit.pid &> /dev/null  
-    _yellow "已卸载CPU占用 - The cpu limit script has been uninstalled successfully."
-    if [ -f "/etc/systemd/system/memory-limit.service" ]; then
-        systemctl stop memory-limit.service
-        systemctl disable memory-limit.service
-        rm /etc/systemd/system/memory-limit.service
-        rm /usr/local/bin/memory-limit.sh
-	      rm /dev/shm/file
-	      kill $(ps -efA | grep memory-limit.sh | awk '{print $2}') &> /dev/null  
-        rm -rf /tmp/memory-limit.pid &> /dev/null  
-        _yellow "已卸载内存占用 - The memory limit script has been uninstalled successfully."
-    fi
-    if [ -f "/etc/systemd/system/bandwidth_occupier.service" ]; then
-        systemctl stop bandwidth_occupier
-        systemctl disable bandwidth_occupier
-        rm /etc/systemd/system/bandwidth_occupier.service
-        rm /usr/local/bin/bandwidth_occupier.sh
-	      systemctl stop bandwidth_occupier.timer
-    	  systemctl disable bandwidth_occupier.timer
-	      rm /etc/systemd/system/bandwidth_occupier.timer
-        rm -rf /usr/local/bin/speedtest-go &> /dev/null  
-	      kill $(ps -efA | grep bandwidth_occupier.sh | awk '{print $2}') &> /dev/null  
-        rm -rf /tmp/bandwidth_occupier.pid &> /dev/null 
-        _yellow "已卸载带宽占用 - The bandwidth occupier and timer script has been uninstalled successfully."
-    fi
-    systemctl daemon-reload
-}
-
-check_and_install() {
-  local command_name=$1
-  local package_name=$2
-
-  if ! command -v $command_name > /dev/null 2>&1; then
-    echo "$command_name not found, installing..."
-    _yellow "Installing $package_name"
-    ${PACKAGE_INSTALL[int]} $package_name
+need_root() {
+  uid=$(id -u 2>/dev/null || echo 1)
+  if [ "$uid" != 0 ]; then
+    err "请使用 root 用户运行本脚本" "Please run this script as root"
+    exit 1
   fi
 }
-  
-pre_check() {
-  reading "是否需要更新软件包管理器？y/[n]：" apt_option
-  if [ "$apt_option" == y ] || [ "$apt_option" == Y ]; then
-    checkupdate
+
+init_locale() {
+  utf8_locale=$(locale -a 2>/dev/null | awk 'tolower($0) ~ /utf-?8/ {print; exit}')
+  if [ -n "$utf8_locale" ]; then
+    export LC_ALL="$utf8_locale"
+    export LANG="$utf8_locale"
+    export LANGUAGE="$utf8_locale"
+  elif locale -a 2>/dev/null | grep -q '^C.UTF-8$'; then
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export LANGUAGE=C.UTF-8
   fi
-  if [[ "$SYSTEM" == "CentOS" ]]; then
-    ${PACKAGE_INSTALL[int]} epel-release
-  fi
-  ${PACKAGE_INSTALL[int]} dmidecode > /dev/null 2>&1
-  check_and_install wget wget
-  check_and_install bc bc
-  check_and_install fallocate util-linux
-  check_and_install nproc coreutils
 }
 
-main() {
-    _green "当前脚本更新时间(请注意比对仓库说明)： $ver"
-    _green "仓库：https://github.com/spiritLHLS/Oracle-server-keep-alive-script"
-    pre_check
-    echo "选择你的选项:"
-    echo "1. 安装保活服务"
-    echo "2. 卸载保活服务"
-    echo "3. 一键更新脚本"
-    echo "4. 退出程序"
-    reading "你的选择：" option
-    case $option in
-        1)
-            echo "选择你需要占用CPU时使用的程序:"
-            echo "1. 本机DD模拟占用(20%~25%) [推荐]"
-            echo "2. BOINC-docker服务(20%)(https://github.com/BOINC/boinc) [不推荐]"
-	          echo "3. 不限制"
-            reading "你的选择：" cpu_option
-            if [ $cpu_option == 2 ]; then
-                boinc
-	          elif [ $cpu_option == 3 ]; then
-    		        echo ""
-            else
-                calculate
-            fi
-            reading "需要限制内存吗? ([y]/n): " memory_confirm
-            if [ "$memory_confirm" != "n" ] && [ "$memory_confirm" != "N" ]; then
-                memory
-            fi
-            reading "需要限制带宽吗? ([y]/n): " bandwidth_confirm
-            if [ "$bandwidth_confirm" != "n" ] && [ "$bandwidth_confirm" != "N" ]; then
-                bandwidth
-            fi
-            ;;
-        2)
-            uninstall
-            exit 0
-            ;;
-        3)
-            checkver
-            ;;
-        *)
-            echo "无效选项，退出程序"
-            exit 1
-            ;;
+ask() {
+  zh=$1
+  en=$2
+  default=${3:-}
+  if [ -n "$default" ]; then
+    printf '%s / %s [%s]: ' "$zh" "$en" "$default"
+  else
+    printf '%s / %s: ' "$zh" "$en"
+  fi
+  IFS= read -r REPLY_VALUE || REPLY_VALUE=
+  [ -n "$REPLY_VALUE" ] || REPLY_VALUE=$default
+}
+
+ask_yn() {
+  zh=$1
+  en=$2
+  default=$3
+  while :; do
+    if [ "$default" = y ]; then
+      suffix="[Y/n]"
+    else
+      suffix="[y/N]"
+    fi
+    printf '%s / %s %s: ' "$zh" "$en" "$suffix"
+    IFS= read -r answer || answer=
+    [ -n "$answer" ] || answer=$default
+    case $answer in
+      y|Y|yes|YES|Yes) return 0 ;;
+      n|N|no|NO|No) return 1 ;;
+      *) warn "请输入 y 或 n" "Please enter y or n" ;;
     esac
+  done
 }
 
+ask_choice() {
+  zh=$1
+  en=$2
+  min=$3
+  max=$4
+  default=$5
+  while :; do
+    ask "$zh" "$en" "$default"
+    if is_uint "$REPLY_VALUE" && [ "$REPLY_VALUE" -ge "$min" ] && [ "$REPLY_VALUE" -le "$max" ]; then
+      return 0
+    fi
+    warn "请输入 $min 到 $max 之间的数字" "Please enter a number from $min to $max"
+  done
+}
 
-main
+ask_uint() {
+  zh=$1
+  en=$2
+  default=$3
+  min=$4
+  max=$5
+  while :; do
+    ask "$zh" "$en" "$default"
+    if is_uint "$REPLY_VALUE" && [ "$REPLY_VALUE" -ge "$min" ] && [ "$REPLY_VALUE" -le "$max" ]; then
+      return 0
+    fi
+    warn "请输入 $min 到 $max 之间的整数" "Please enter an integer from $min to $max"
+  done
+}
+
+ask_number() {
+  zh=$1
+  en=$2
+  default=$3
+  while :; do
+    ask "$zh" "$en" "$default"
+    if is_number "$REPLY_VALUE"; then
+      return 0
+    fi
+    warn "请输入数字" "Please enter a number"
+  done
+}
+
+ask_positive_number() {
+  zh=$1
+  en=$2
+  default=$3
+  while :; do
+    ask_number "$zh" "$en" "$default"
+    if awk -v n="$REPLY_VALUE" 'BEGIN {exit (n > 0 ? 0 : 1)}'; then
+      return 0
+    fi
+    warn "请输入大于0的数字" "Please enter a number greater than 0"
+  done
+}
+
+detect_os() {
+  OS_KERNEL=$(uname -s 2>/dev/null || echo unknown)
+  if [ -r /etc/os-release ]; then
+    OS_NAME=$(awk -F= '/^PRETTY_NAME=/{gsub(/^"|"$/, "", $2); print $2; exit}' /etc/os-release)
+    [ -n "$OS_NAME" ] || OS_NAME=$(awk -F= '/^NAME=/{gsub(/^"|"$/, "", $2); print $2; exit}' /etc/os-release)
+  fi
+  [ -n "$OS_NAME" ] || OS_NAME=$OS_KERNEL
+}
+
+detect_package_manager() {
+  for pm in apt-get dnf yum microdnf zypper apk pacman pkg pkg_add pkgin emerge xbps-install; do
+    if command -v "$pm" >/dev/null 2>&1; then
+      PKG_MANAGER=$pm
+      return 0
+    fi
+  done
+  PKG_MANAGER=none
+  return 1
+}
+
+pkg_update() {
+  case $PKG_MANAGER in
+    apt-get) apt-get update ;;
+    dnf) dnf -y makecache ;;
+    yum) yum -y makecache ;;
+    microdnf) microdnf -y makecache ;;
+    zypper) zypper --non-interactive refresh ;;
+    apk) apk update ;;
+    pacman) pacman -Sy --noconfirm ;;
+    pkg) pkg update -f ;;
+    pkgin) pkgin -y update ;;
+    xbps-install) xbps-install -S ;;
+    emerge) emerge --sync ;;
+    *) warn "未检测到可用包管理器，跳过更新" "No supported package manager detected, skipping update"; return 1 ;;
+  esac
+}
+
+pkg_install() {
+  [ "$#" -gt 0 ] || return 0
+  case $PKG_MANAGER in
+    apt-get) DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+    dnf) dnf -y install "$@" ;;
+    yum) yum -y install "$@" ;;
+    microdnf) microdnf -y install "$@" ;;
+    zypper) zypper --non-interactive install -y "$@" ;;
+    apk) apk add --no-cache "$@" ;;
+    pacman) pacman -Sy --noconfirm --needed "$@" ;;
+    pkg) pkg install -y "$@" ;;
+    pkg_add) pkg_add -I "$@" ;;
+    pkgin) pkgin -y install "$@" ;;
+    xbps-install) xbps-install -y "$@" ;;
+    emerge) emerge "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+pkg_remove() {
+  [ "$#" -gt 0 ] || return 0
+  case $PKG_MANAGER in
+    apt-get) DEBIAN_FRONTEND=noninteractive apt-get remove -y "$@" ;;
+    dnf) dnf -y remove "$@" ;;
+    yum) yum -y remove "$@" ;;
+    microdnf) microdnf -y remove "$@" ;;
+    zypper) zypper --non-interactive remove -y "$@" ;;
+    apk) apk del "$@" ;;
+    pacman) pacman -Rsc --noconfirm "$@" ;;
+    pkg) pkg delete -y "$@" ;;
+    pkg_add|pkg_delete) pkg_delete "$@" ;;
+    pkgin) pkgin -y remove "$@" ;;
+    xbps-install) xbps-remove -Ry "$@" ;;
+    emerge) emerge --depclean "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_dirs() {
+  mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$STATE_DIR" 2>/dev/null || {
+    err "无法创建安装目录" "Failed to create install directories"
+    exit 1
+  }
+}
+
+refresh_paths_from_config() {
+  LOG_DIR=${OALIVE_LOG_DIR:-$LOG_DIR}
+  STATE_DIR=${OALIVE_STATE_DIR:-$STATE_DIR}
+  RUN_DIR=${OALIVE_RUN_DIR:-$RUN_DIR}
+}
+
+download_to() {
+  url=$1
+  dest=$2
+  is_uint "$DOWNLOAD_TIMEOUT" || DOWNLOAD_TIMEOUT=30
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 10 --max-time "$DOWNLOAD_TIMEOUT" "$url" -o "$dest"
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q --timeout=10 --tries=3 -O "$dest" "$url"
+    return $?
+  fi
+  if command -v fetch >/dev/null 2>&1; then
+    fetch -q -T "$DOWNLOAD_TIMEOUT" -o "$dest" "$url"
+    return $?
+  fi
+  return 1
+}
+
+install_file() {
+  name=$1
+  dest=$2
+  mode=$3
+  tmp=$dest.tmp.$$
+  if [ -f "$SCRIPT_DIR/$name" ]; then
+    cp "$SCRIPT_DIR/$name" "$tmp" || {
+      rm -f "$tmp" 2>/dev/null || true
+      return 1
+    }
+  else
+    download_to "$BASE_URL/$name" "$tmp" || {
+      rm -f "$tmp" 2>/dev/null || true
+      return 1
+    }
+  fi
+  chmod "$mode" "$tmp" || {
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  }
+  mv "$tmp" "$dest" || {
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  }
+}
+
+get_cores() {
+  cores=
+  if command -v getconf >/dev/null 2>&1; then
+    cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  if ! is_uint "$cores" || [ "$cores" -lt 1 ]; then
+    cores=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  fi
+  if ! is_uint "$cores" || [ "$cores" -lt 1 ]; then
+    cores=$(awk '/^processor[[:space:]]*:/{n++} END{print n+0}' /proc/cpuinfo 2>/dev/null || true)
+  fi
+  if ! is_uint "$cores" || [ "$cores" -lt 1 ]; then
+    cores=1
+  fi
+  printf '%s\n' "$cores"
+}
+
+default_cpu_quota() {
+  cores=$(get_cores)
+  case $cores in
+    2|3|4) printf '%s\n' $((cores * 20)) ;;
+    *) printf '%s\n' 25 ;;
+  esac
+}
+
+detect_scheduler() {
+  case ${OALIVE_SCHEDULER:-auto} in
+    systemd) SCHEDULER=systemd; return 0 ;;
+    cron) SCHEDULER=cron; return 0 ;;
+  esac
+  if [ "$OS_KERNEL" = Linux ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    SCHEDULER=systemd
+  else
+    SCHEDULER=cron
+  fi
+}
+
+write_config() {
+  sq_install_dir=$(sq "$INSTALL_DIR")
+  sq_log_dir=$(sq "$LOG_DIR")
+  sq_state_dir=$(sq "$STATE_DIR")
+  sq_run_dir=$(sq "$RUN_DIR")
+  sq_speedtest=$(sq "$SPEEDTEST_GO_BIN")
+  sq_cpu_script=$(sq "$INSTALL_DIR/cpu-limit.sh")
+  sq_memory_script=$(sq "$INSTALL_DIR/memory-limit.sh")
+  sq_bandwidth_script=$(sq "$INSTALL_DIR/bandwidth_occupier.sh")
+  cat >"$CONFIG_FILE" <<EOF
+# Oracle-server-keep-alive-script runtime config.
+# This file is POSIX shell syntax and is loaded by /bin/sh.
+INSTALL_DIR=$sq_install_dir
+OALIVE_LOG_DIR=$sq_log_dir
+OALIVE_STATE_DIR=$sq_state_dir
+OALIVE_RUN_DIR=$sq_run_dir
+OALIVE_LOG_MAX_BYTES=131072
+CPU_QUOTA_PERCENT=$CPU_QUOTA_PERCENT
+CPU_CYCLE_SECONDS=10
+MEMORY_TARGET_PERCENT=$MEMORY_TARGET_PERCENT
+MEMORY_HOLD_SECONDS=$MEMORY_HOLD_SECONDS
+MEMORY_REST_SECONDS=$MEMORY_REST_SECONDS
+MEMORY_MAX_MB=$MEMORY_MAX_MB
+BANDWIDTH_MODE=$BANDWIDTH_MODE
+BANDWIDTH_INTERVAL_MINUTES=$BANDWIDTH_INTERVAL_MINUTES
+BANDWIDTH_DURATION_MINUTES=$BANDWIDTH_DURATION_MINUTES
+BANDWIDTH_RATE_PERCENT=$BANDWIDTH_RATE_PERCENT
+BANDWIDTH_RATE_MBPS=$BANDWIDTH_RATE_MBPS
+BANDWIDTH_DEFAULT_MBPS=$BANDWIDTH_DEFAULT_MBPS
+BANDWIDTH_SPEEDTEST_COUNT=$BANDWIDTH_SPEEDTEST_COUNT
+SPEEDTEST_GO_BIN=$sq_speedtest
+CPU_SCRIPT=$sq_cpu_script
+MEMORY_SCRIPT=$sq_memory_script
+BANDWIDTH_SCRIPT=$sq_bandwidth_script
+EOF
+  chmod 600 "$CONFIG_FILE"
+
+  cat >"$ENABLED_FILE" <<EOF
+CPU_ENABLED=$CPU_ENABLED
+MEMORY_ENABLED=$MEMORY_ENABLED
+BANDWIDTH_ENABLED=$BANDWIDTH_ENABLED
+EOF
+  chmod 600 "$ENABLED_FILE"
+}
+
+install_runtime_files() {
+  install_file cpu-limit.sh "$INSTALL_DIR/cpu-limit.sh" 755 || return 1
+  install_file memory-limit.sh "$INSTALL_DIR/memory-limit.sh" 755 || return 1
+  install_file bandwidth_occupier.sh "$INSTALL_DIR/bandwidth_occupier.sh" 755 || return 1
+  install_file oalive-cron-runner.sh "$INSTALL_DIR/oalive-cron-runner.sh" 755 || return 1
+}
+
+systemd_stop_disable() {
+  unit=$1
+  systemctl stop "$unit" >/dev/null 2>&1 || true
+  systemctl disable "$unit" >/dev/null 2>&1 || true
+}
+
+systemd_enable_restart() {
+  unit=$1
+  systemctl daemon-reload
+  systemctl enable "$unit" >/dev/null 2>&1 || true
+  systemctl restart "$unit"
+}
+
+install_systemd() {
+  mkdir -p "$SYSTEMD_DIR" || return 1
+  install_file cpu-limit.service "$SYSTEMD_DIR/cpu-limit.service" 644 || return 1
+  install_file memory-limit.service "$SYSTEMD_DIR/memory-limit.service" 644 || return 1
+  install_file bandwidth_occupier.service "$SYSTEMD_DIR/bandwidth_occupier.service" 644 || return 1
+  install_file bandwidth_occupier.timer "$SYSTEMD_DIR/bandwidth_occupier.timer" 644 || return 1
+
+  mkdir -p "$SYSTEMD_DIR/cpu-limit.service.d" "$SYSTEMD_DIR/bandwidth_occupier.timer.d" || return 1
+  cat >"$SYSTEMD_DIR/cpu-limit.service.d/quota.conf" <<EOF
+[Service]
+CPUQuota=${CPU_QUOTA_PERCENT}%
+EOF
+  [ -s "$SYSTEMD_DIR/cpu-limit.service.d/quota.conf" ] || return 1
+  cat >"$SYSTEMD_DIR/bandwidth_occupier.timer.d/interval.conf" <<EOF
+[Timer]
+OnUnitActiveSec=
+OnUnitActiveSec=${BANDWIDTH_INTERVAL_MINUTES}min
+EOF
+  [ -s "$SYSTEMD_DIR/bandwidth_occupier.timer.d/interval.conf" ] || return 1
+
+  if [ "$CPU_ENABLED" = 1 ]; then
+    systemd_enable_restart cpu-limit.service || warn "CPU服务启动失败，请查看日志" "Failed to start CPU service, please check logs"
+  else
+    systemd_stop_disable cpu-limit.service
+  fi
+
+  if [ "$MEMORY_ENABLED" = 1 ]; then
+    systemd_enable_restart memory-limit.service || warn "内存服务启动失败，请查看日志" "Failed to start memory service, please check logs"
+  else
+    systemd_stop_disable memory-limit.service
+  fi
+
+  if [ "$BANDWIDTH_ENABLED" = 1 ]; then
+    systemctl daemon-reload
+    systemctl enable bandwidth_occupier.timer >/dev/null 2>&1 || true
+    systemctl restart bandwidth_occupier.timer || warn "带宽定时器启动失败，请查看日志" "Failed to start bandwidth timer, please check logs"
+  else
+    systemd_stop_disable bandwidth_occupier.timer
+    systemd_stop_disable bandwidth_occupier.service
+  fi
+
+  systemctl daemon-reload
+}
+
+remove_cron_block() {
+  command -v crontab >/dev/null 2>&1 || return 0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/oalive-cron.XXXXXX") || return 1
+  new=$(mktemp "${TMPDIR:-/tmp}/oalive-cron-new.XXXXXX") || {
+    rm -f "$tmp"
+    return 1
+  }
+  crontab -l >"$tmp" 2>/dev/null || : >"$tmp"
+  awk -v begin="$CRON_BEGIN" -v end="$CRON_END" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "$tmp" >"$new"
+  crontab "$new" 2>/dev/null || true
+  rm -f "$tmp" "$new"
+}
+
+install_cron() {
+  if ! command -v crontab >/dev/null 2>&1; then
+    warn "未找到 crontab，将只启动当前进程，重启后需手动运行" "crontab not found; starting now only, manual restart is required after reboot"
+    /bin/sh "$INSTALL_DIR/oalive-cron-runner.sh" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  tmp=$(mktemp "${TMPDIR:-/tmp}/oalive-cron.XXXXXX") || return 1
+  new=$(mktemp "${TMPDIR:-/tmp}/oalive-cron-new.XXXXXX") || {
+    rm -f "$tmp"
+    return 1
+  }
+  crontab -l >"$tmp" 2>/dev/null || : >"$tmp"
+  awk -v begin="$CRON_BEGIN" -v end="$CRON_END" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "$tmp" >"$new"
+  cron_runner_cmd=$(cron_escape "/bin/sh $(sq "$INSTALL_DIR/oalive-cron-runner.sh") >/dev/null 2>&1")
+  {
+    printf '%s\n' "$CRON_BEGIN"
+    printf '%s\n' "* * * * * $cron_runner_cmd"
+    printf '%s\n' "$CRON_END"
+  } >>"$new"
+  if ! crontab "$new"; then
+    rm -f "$tmp" "$new"
+    warn "cron任务安装失败，将只启动当前进程" "Failed to install cron job; starting current process only"
+    /bin/sh "$INSTALL_DIR/oalive-cron-runner.sh" >/dev/null 2>&1 || true
+    return 1
+  fi
+  rm -f "$tmp" "$new"
+  /bin/sh "$INSTALL_DIR/oalive-cron-runner.sh" >/dev/null 2>&1 || true
+}
+
+service_status() {
+  unit=$1
+  if [ "$SCHEDULER" = systemd ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+      printf '%s\n' active
+    else
+      printf '%s\n' inactive
+    fi
+  else
+    printf '%s\n' cron
+  fi
+}
+
+install_speedtest_go_linux() {
+  [ "$OS_KERNEL" = Linux ] || return 1
+  [ -x "$SPEEDTEST_GO_BIN" ] && return 0
+  command -v tar >/dev/null 2>&1 || pkg_install tar >/dev/null 2>&1 || true
+  arch=$(uname -m 2>/dev/null || echo x86_64)
+  case $arch in
+    x86_64|amd64|x64) asset_arch=x86_64 ;;
+    i386|i686) asset_arch=i386 ;;
+    aarch64|arm64|armv7l|armv8|armv8l) asset_arch=arm64 ;;
+    s390x) asset_arch=s390x ;;
+    riscv64) asset_arch=riscv64 ;;
+    ppc64le) asset_arch=ppc64le ;;
+    ppc64) asset_arch=ppc64 ;;
+    *) return 1 ;;
+  esac
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/oalive-speedtest.XXXXXX") || return 1
+  url="https://github.com/showwin/speedtest-go/releases/download/v1.6.0/speedtest-go_1.6.0_Linux_${asset_arch}.tar.gz"
+  if download_to "$url" "$tmpdir/speedtest-go.tar.gz" && mkdir -p "$(dirname "$SPEEDTEST_GO_BIN")" && tar -zxf "$tmpdir/speedtest-go.tar.gz" -C "$tmpdir"; then
+    speedtest_path=$(find "$tmpdir" -type f -name speedtest-go 2>/dev/null | sed -n '1p')
+    if [ -n "$speedtest_path" ]; then
+      cp "$speedtest_path" "$SPEEDTEST_GO_BIN"
+      chmod 755 "$SPEEDTEST_GO_BIN"
+      rm -rf "$tmpdir"
+      return 0
+    fi
+  fi
+  rm -rf "$tmpdir"
+  return 1
+}
+
+ensure_speedtest_tool() {
+  command -v speedtest-cli >/dev/null 2>&1 && return 0
+  [ -x "$SPEEDTEST_GO_BIN" ] && return 0
+  command -v speedtest-go >/dev/null 2>&1 && return 0
+
+  pkg_install speedtest-cli >/dev/null 2>&1 && command -v speedtest-cli >/dev/null 2>&1 && return 0
+  pkg_install speedtest-go >/dev/null 2>&1 && command -v speedtest-go >/dev/null 2>&1 && return 0
+  install_speedtest_go_linux && return 0
+
+  return 1
+}
+
+ensure_basic_tools() {
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && ! command -v fetch >/dev/null 2>&1; then
+    warn "未找到下载工具，尝试安装 curl" "No downloader found, trying to install curl"
+    pkg_install curl >/dev/null 2>&1 || pkg_install wget >/dev/null 2>&1 || true
+  fi
+}
+
+install_boinc() {
+  if [ "$OS_KERNEL" != Linux ]; then
+    warn "BOINC Docker模式仅支持Linux，已跳过CPU占用" "BOINC Docker mode only supports Linux; CPU occupier skipped"
+    CPU_ENABLED=0
+    return 0
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "未找到Docker，尝试安装" "Docker not found, trying to install it"
+    pkg_install docker docker.io docker-ce docker-cli >/dev/null 2>&1 || true
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "Docker安装失败，已改用本机CPU占用模式" "Docker install failed, falling back to native CPU occupier"
+    CPU_ENABLED=1
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now docker >/dev/null 2>&1 || true
+  fi
+  docker rm -f boinc >/dev/null 2>&1 || true
+  docker run -d --restart unless-stopped --name boinc -v /var/lib/boinc:/var/lib/boinc -e "BOINC_CMD_LINE_OPTIONS=--allow_remote_gui_rpc --cpu_usage_limit=20" boinc/client >/dev/null 2>&1 || {
+    warn "BOINC容器启动失败，已改用本机CPU占用模式" "BOINC container failed to start, falling back to native CPU occupier"
+    CPU_ENABLED=1
+    return 0
+  }
+  CPU_ENABLED=0
+  info "BOINC容器已启动" "BOINC container started"
+}
+
+pre_check() {
+  detect_package_manager || true
+  if ask_yn "是否更新包管理器缓存" "Update package manager cache" n; then
+    pkg_update || warn "包管理器缓存更新失败，继续安装" "Package cache update failed, continuing"
+  fi
+  ensure_basic_tools
+}
+
+configure_install() {
+  CPU_QUOTA_PERCENT=$(default_cpu_quota)
+
+  note "当前系统：$OS_NAME ($OS_KERNEL)，调度器：$SCHEDULER，包管理器：$PKG_MANAGER" "System: $OS_NAME ($OS_KERNEL), scheduler: $SCHEDULER, package manager: $PKG_MANAGER"
+  note "CPU默认目标：${CPU_QUOTA_PERCENT}%单核配额" "Default CPU target: ${CPU_QUOTA_PERCENT}% of one-core quota"
+
+  printf '%s\n' "选择CPU占用模式 / Choose CPU occupier mode:"
+  printf '%s\n' "1. 本机POSIX占用，支持Linux/BSD [推荐] / Native POSIX occupier for Linux/BSD [recommended]"
+  printf '%s\n' "2. BOINC Docker模式，仅Linux可用 / BOINC Docker mode, Linux only"
+  printf '%s\n' "3. 不启用CPU占用 / Disable CPU occupier"
+  ask_choice "你的选择" "Your choice" 1 3 1
+  case $REPLY_VALUE in
+    1)
+      CPU_ENABLED=1
+      ask_uint "CPU目标百分比（单核配额）" "CPU target percent of one-core quota" "$CPU_QUOTA_PERCENT" 1 400
+      CPU_QUOTA_PERCENT=$REPLY_VALUE
+      ;;
+    2)
+      install_boinc
+      ;;
+    3)
+      CPU_ENABLED=0
+      ;;
+  esac
+
+  if ask_yn "是否启用内存占用" "Enable memory occupier" y; then
+    MEMORY_ENABLED=1
+    ask_uint "目标内存使用百分比" "Target memory usage percent" "$MEMORY_TARGET_PERCENT" 1 90
+    MEMORY_TARGET_PERCENT=$REPLY_VALUE
+    ask_uint "每轮保持秒数" "Hold seconds per cycle" "$MEMORY_HOLD_SECONDS" 1 86400
+    MEMORY_HOLD_SECONDS=$REPLY_VALUE
+    ask_uint "每轮释放后休息秒数" "Rest seconds per cycle" "$MEMORY_REST_SECONDS" 1 86400
+    MEMORY_REST_SECONDS=$REPLY_VALUE
+  else
+    MEMORY_ENABLED=0
+  fi
+
+  if ask_yn "是否启用带宽占用" "Enable bandwidth occupier" y; then
+    BANDWIDTH_ENABLED=1
+    printf '%s\n' "选择带宽占用模式 / Choose bandwidth mode:"
+    printf '%s\n' "1. speedtest模式，按次数跑测速 / speedtest mode, run speed tests by count"
+    printf '%s\n' "2. 受控下载模式，可按速率和时长限制 [推荐] / Controlled download mode with rate and duration limits [recommended]"
+    ask_choice "你的选择" "Your choice" 1 2 2
+    if [ "$REPLY_VALUE" = 1 ]; then
+      BANDWIDTH_MODE=speedtest
+      ask_uint "每轮speedtest次数" "Speedtest count per run" "$BANDWIDTH_SPEEDTEST_COUNT" 1 100
+      BANDWIDTH_SPEEDTEST_COUNT=$REPLY_VALUE
+      ensure_speedtest_tool || warn "未安装speedtest工具，运行时会失败；请查看README手动安装" "No speedtest tool installed; runtime may fail, see README for manual install"
+    else
+      BANDWIDTH_MODE=wget
+      if ask_yn "是否自定义带宽参数" "Customize bandwidth parameters" n; then
+        ask_positive_number "下载速率Mbps" "Download rate in Mbps" 10
+        BANDWIDTH_RATE_MBPS=$REPLY_VALUE
+        BANDWIDTH_RATE_PERCENT=100
+        ask_uint "每轮下载时长（分钟）" "Download duration per run (minutes)" "$BANDWIDTH_DURATION_MINUTES" 1 1440
+        BANDWIDTH_DURATION_MINUTES=$REPLY_VALUE
+        ask_uint "触发间隔（分钟）" "Trigger interval (minutes)" "$BANDWIDTH_INTERVAL_MINUTES" 1 10080
+        BANDWIDTH_INTERVAL_MINUTES=$REPLY_VALUE
+      else
+        BANDWIDTH_RATE_MBPS=auto
+        BANDWIDTH_RATE_PERCENT=30
+        BANDWIDTH_DURATION_MINUTES=6
+        BANDWIDTH_INTERVAL_MINUTES=45
+        ensure_speedtest_tool || warn "未安装speedtest工具，将使用默认10Mbps估算值限速" "No speedtest tool installed; default 10Mbps estimate will be used"
+      fi
+    fi
+  else
+    BANDWIDTH_ENABLED=0
+  fi
+}
+
+install_all() {
+  need_root
+  ensure_dirs
+  pre_check
+  configure_install
+  write_config
+  install_runtime_files || {
+    err "运行脚本安装失败" "Failed to install runtime scripts"
+    exit 1
+  }
+
+  if [ "$SCHEDULER" = systemd ]; then
+    install_systemd || {
+      warn "systemd安装失败，回退到cron调度" "systemd install failed, falling back to cron"
+      SCHEDULER=cron
+      install_cron
+    }
+  else
+    install_cron
+  fi
+
+  info "安装完成，配置文件：$CONFIG_FILE，日志目录：$LOG_DIR" "Install complete, config: $CONFIG_FILE, logs: $LOG_DIR"
+}
+
+stop_by_lock() {
+  name=$1
+  for dir in "$RUN_DIR/oalive-$name.lock" "/tmp/oalive-$name.lock"; do
+    [ -r "$dir/pid" ] || continue
+    pid=$(sed -n '1p' "$dir/pid" 2>/dev/null || true)
+    if is_uint "$pid" && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -rf "$dir" 2>/dev/null || true
+  done
+}
+
+kill_script_path() {
+  script=$1
+  [ -n "$script" ] || return 0
+  (ps -eo pid= -o args= 2>/dev/null || ps ax -o pid= -o command= 2>/dev/null) |
+    awk -v s="$script" -v self="$$" '
+      $1 == self {next}
+      index($0, s) {
+        command = $0
+        sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", command)
+        pos = index(command, s)
+        if (pos > 0) {
+          before = pos == 1 ? " " : substr(command, pos - 1, 1)
+          after = substr(command, pos + length(s), 1)
+          if ((before == " " || before == "\t") && (after == "" || after == " " || after == "\t")) print $1
+        }
+      }
+    ' |
+    while IFS= read -r pid; do
+    is_uint "$pid" && kill "$pid" 2>/dev/null || true
+  done
+}
+
+uninstall() {
+  need_root
+  [ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+  refresh_paths_from_config
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemd_stop_disable cpu-limit.service
+    systemd_stop_disable memory-limit.service
+    systemd_stop_disable bandwidth_occupier.timer
+    systemd_stop_disable bandwidth_occupier.service
+    rm -rf "$SYSTEMD_DIR/cpu-limit.service" \
+      "$SYSTEMD_DIR/memory-limit.service" \
+      "$SYSTEMD_DIR/bandwidth_occupier.service" \
+      "$SYSTEMD_DIR/bandwidth_occupier.timer" \
+      "$SYSTEMD_DIR/cpu-limit.service.d" \
+      "$SYSTEMD_DIR/bandwidth_occupier.timer.d"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  remove_cron_block
+  stop_by_lock cpu-limit
+  stop_by_lock memory-limit
+  stop_by_lock bandwidth
+  kill_script_path "$INSTALL_DIR/cpu-limit.sh"
+  kill_script_path "$INSTALL_DIR/memory-limit.sh"
+  kill_script_path "$INSTALL_DIR/bandwidth_occupier.sh"
+  docker rm -f boinc >/dev/null 2>&1 || true
+
+  rm -f "$INSTALL_DIR/cpu-limit.sh" \
+    "$INSTALL_DIR/memory-limit.sh" \
+    "$INSTALL_DIR/bandwidth_occupier.sh" \
+    "$INSTALL_DIR/oalive-cron-runner.sh"
+  rm -rf "$CONFIG_DIR" "$STATE_DIR"
+
+  info "卸载完成" "Uninstall complete"
+}
+
+status() {
+  detect_scheduler
+  [ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+  [ -r "$ENABLED_FILE" ] && . "$ENABLED_FILE"
+  refresh_paths_from_config
+  note "当前脚本版本：$ver" "Current script version: $ver"
+  note "系统：$OS_NAME ($OS_KERNEL)" "System: $OS_NAME ($OS_KERNEL)"
+  note "调度器：$SCHEDULER" "Scheduler: $SCHEDULER"
+  note "配置文件：$CONFIG_FILE" "Config file: $CONFIG_FILE"
+
+  if [ "$SCHEDULER" = systemd ]; then
+    note "CPU服务：$(service_status cpu-limit.service)" "CPU service: $(service_status cpu-limit.service)"
+    note "内存服务：$(service_status memory-limit.service)" "Memory service: $(service_status memory-limit.service)"
+    note "带宽定时器：$(service_status bandwidth_occupier.timer)" "Bandwidth timer: $(service_status bandwidth_occupier.timer)"
+  else
+    if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q "$CRON_BEGIN"; then
+      note "cron任务：已安装" "cron job: installed"
+    else
+      note "cron任务：未安装" "cron job: not installed"
+    fi
+    note "CPU启用：$CPU_ENABLED" "CPU enabled: $CPU_ENABLED"
+    note "内存启用：$MEMORY_ENABLED" "Memory enabled: $MEMORY_ENABLED"
+    note "带宽启用：$BANDWIDTH_ENABLED" "Bandwidth enabled: $BANDWIDTH_ENABLED"
+  fi
+}
+
+checkver() {
+  tmp=$(mktemp "${TMPDIR:-/tmp}/oalive-update.XXXXXX") || exit 1
+  if ! download_to "$BASE_URL/oalive.sh" "$tmp"; then
+    rm -f "$tmp"
+    err "下载新版脚本失败" "Failed to download updated script"
+    exit 1
+  fi
+  new_ver=$(awk -F= '/^ver=/{gsub(/"/, "", $2); print $2; exit}' "$tmp")
+  if [ -n "$new_ver" ] && [ "$new_ver" != "$ver" ]; then
+    chmod 755 "$tmp"
+    case $0 in
+      */*) update_target=$0 ;;
+      *) update_target=$SCRIPT_DIR/oalive.sh ;;
+    esac
+    if cp "$tmp" "$update_target" 2>/dev/null; then
+      rm -f "$tmp"
+      info "脚本已更新：$ver -> $new_ver，请重新运行" "Script updated: $ver -> $new_ver, please run it again"
+    else
+      mv "$tmp" "$SCRIPT_DIR/oalive.sh.new"
+      info "新版脚本已保存到 $SCRIPT_DIR/oalive.sh.new" "Updated script saved to $SCRIPT_DIR/oalive.sh.new"
+    fi
+  else
+    rm -f "$tmp"
+    info "当前已是最新脚本" "Current script is already up to date"
+  fi
+}
+
+usage() {
+  printf '%s\n' "Oracle-server-keep-alive-script $ver"
+  printf '%s\n' "Usage: sh oalive.sh [--install|--uninstall|--status|--update|--help]"
+}
+
+main_menu() {
+  status
+  printf '%s\n' ""
+  printf '%s\n' "选择你的选项 / Choose an option:"
+  printf '%s\n' "1. 安装或重装保活服务 / Install or reinstall keep-alive services"
+  printf '%s\n' "2. 卸载保活服务 / Uninstall keep-alive services"
+  printf '%s\n' "3. 更新安装引导脚本 / Update installer script"
+  printf '%s\n' "4. 退出 / Exit"
+  ask_choice "你的选择" "Your choice" 1 4 1
+  case $REPLY_VALUE in
+    1) install_all ;;
+    2) uninstall ;;
+    3) checkver ;;
+    4) info "退出程序" "Exit"; exit 0 ;;
+  esac
+}
+
+setup_script_dir
+init_locale
+detect_os
+detect_package_manager || true
+detect_scheduler
+
+case ${1:-} in
+  --install|install) install_all ;;
+  --uninstall|uninstall) uninstall ;;
+  --status|status) status ;;
+  --update|update) checkver ;;
+  --help|-h|help) usage ;;
+  '') main_menu ;;
+  *) usage; exit 1 ;;
+esac

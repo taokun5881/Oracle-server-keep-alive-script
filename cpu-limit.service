@@ -1,13 +1,16 @@
 [Unit]
-Description=Keep CPU usage
+Description=Oracle keep-alive CPU occupier
+After=network-online.target
 
 [Service]
+Type=simple
 User=root
-ExecStart=/bin/bash /usr/local/bin/cpu-limit.sh
-ExecStop=/bin/bash -c 'kill $(cat /tmp/cpu-limit.pid) && rm -rf /tmp/cpu-limit.pid'
+Environment=CPU_SCRIPT=/usr/local/bin/cpu-limit.sh
+EnvironmentFile=-/etc/oalive/oalive.conf
+ExecStart=/bin/sh ${CPU_SCRIPT}
 Restart=always
-RestartSec=60s
-RestartKillSignal=SIGKILL
+RestartSec=30s
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

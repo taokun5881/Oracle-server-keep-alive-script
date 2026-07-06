@@ -1,0 +1,29 @@
+# Local runtime and secrets
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+*password*
+*secret*
+
+# Databases and generated runtime state
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+*.lock
+
+# Screenshots and temporary artifacts
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+.cache/
+tmp/
+temp/

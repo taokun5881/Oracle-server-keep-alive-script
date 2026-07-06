@@ -1,10 +1,15 @@
 [Unit]
-Description=Bandwidth Occupier Service
+Description=Oracle keep-alive bandwidth occupier
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=oneshot
 User=root
-#ExecStartPre=-/bin/bash -c 'kill $(ps -efA | grep bandwidth_occupier.sh | awk "{print $2}")'
-ExecStart=/bin/bash /usr/local/bin/bandwidth_occupier.sh
+Environment=BANDWIDTH_SCRIPT=/usr/local/bin/bandwidth_occupier.sh
+EnvironmentFile=-/etc/oalive/oalive.conf
+ExecStart=/bin/sh ${BANDWIDTH_SCRIPT}
+TimeoutStartSec=0
 
 [Install]
 WantedBy=multi-user.target

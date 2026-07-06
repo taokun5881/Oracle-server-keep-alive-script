@@ -1,82 +1,130 @@
 # Oracle-server-keep-alive-script
 
+[![Hits](https://hits.spiritlhl.net/Oracle-server-keep-alive-script.svg?action=hit&title=Hits&title_bg=%23555555&count_bg=%2324dde1&edge_flat=false)](https://hits.spiritlhl.net)
+
 ## 甲骨文服务器保活脚本
 
-适配系统：已在Ubuntu 20+，Debian 10+, Centos 7+, Oracle linux 8+，AlmaLinux 8.5+
+这个项目是给低负载机器做保活用的，占用项可选：CPU、内存、带宽。
 
-上述系统验证无问题，别的主流系统应该也没有问题
+运行脚本已统一为 POSIX `sh` 兼容，也可以直接用 `bash` 启动。
 
-可选占用：CPU，内存，带宽
+英文文档见 [README_EN.md](README_EN.md)。
 
-安装完毕后如果有问题请卸载脚本反馈问题(重复卸载也没问题)
+## 支持范围
 
-所有资源都是动态占用，实时调整，避免服务器有别的任何资源已经超过限额了仍然再占用资源
+- Linux：Debian、Ubuntu、RHEL/CentOS/Oracle Linux/AlmaLinux/Rocky、Fedora、Amazon Linux、Arch、Alpine、openSUSE/SLES、Void、Gentoo 等常见发行版。
+- BSD：FreeBSD、OpenBSD、NetBSD、DragonFly BSD 等带 `cron` 和标准 POSIX 工具的系统。
+- 调度：Linux 且有 systemd 时走 systemd；非 systemd 的 Linux 和 BSD 走 cron 监督器。
+- 包管理器：`apt-get`、`dnf`、`yum`、`microdnf`、`zypper`、`apk`、`pacman`、`pkg`、`pkg_add`、`pkgin`、`xbps-install`、`emerge`。
 
-为避免GitHub的CDN抽风加载不了新内容，所有新更新已使用[Gitlab仓库](https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script)，本仓库仅作存档
+系统差异会自动降级处理。比如 BSD 没有 systemd 就走 cron；没有 speedtest 工具时，带宽模式会回退到默认速率估算，不会直接报错退出。
 
-请留意脚本当前更新日期：2023.03.06.12.44
+## 安装
 
-### 基础开发完毕，测试中，有问题请在issues中反馈
+使用 `sh`：
 
-选项1安装，选项2卸载，选项3更新安装引导脚本，选项4退出脚本
-
-安装过程中无脑回车则全部可选的占用都占用，不需要什么占用输入```n```再回车
-
-最后会询问是否需要带宽占用的参数自定义，这时候默认选项就是```n```，回车就使用默认配置，输入```y```再回车则需要按照提示自定义参数
-
+```sh
+curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh -o oalive.sh
+chmod +x oalive.sh
+sh oalive.sh
 ```
-curl -L https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh -o oalive.sh && chmod +x oalive.sh && bash oalive.sh
-```
 
-或
+或使用 `bash`：
 
-```
+```sh
+curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh -o oalive.sh
+chmod +x oalive.sh
 bash oalive.sh
 ```
 
-或
+在仓库目录内运行：
 
+```sh
+sh oalive.sh
 ```
-bash <(wget -qO- --no-check-certificate https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh)
+
+脚本需要 root 权限安装服务、cron、配置和日志目录。
+
+## 菜单
+
+- `1`：安装或重装保活服务
+- `2`：卸载保活服务
+- `3`：更新安装引导脚本
+- `4`：退出
+
+也可以使用命令行参数：
+
+```sh
+sh oalive.sh --install
+sh oalive.sh --uninstall
+sh oalive.sh --status
+sh oalive.sh --update
 ```
 
-### 说明
+## 特点
 
-- CPU占用有DD模拟占用模式和科学计算模式可自由选择，设定占用区间为15~25%
-- CPU占用在守护进程中设置了最高占用
-- CPU占用默认25%最高(核数✖12%如果低于25%时设置，高于25%则按照计算后的比例来)
-- 内存占用设定占用20%总内存，占用300秒休息300秒
-- 内存占用每300秒检测一遍，动态调整增加占用的大小，如果你内存大于20%则不增加占用
-- 带宽占用每45分钟下载一次1G~10G大小的文件进行占用，只下载不保存，下载过程中不会占用硬盘
-- 带宽占用动态调整实际下载带宽/速率，限制下载时长最长10分钟，每次下载前先测试最大可用带宽实时调整为20%带宽下载
-- 带宽占用测试使用speedtest-cli和speedtest-go双重保险
-- 占用过程中使用守护进程和开机自启服务，保证占用任务持续且有效
-- 可选择一键卸载所有占用服务，卸载会将所有脚本和服务卸载，包括任务、守护进程和开机自启的设置
-- 一键检查更新，更新仅限于脚本更新，**更新后请重新设置占用服务**
-- 对所有进程执行增加唯一性检测(PID文件判断)，避免重复运行
+- CPU：默认使用 POSIX 兼容占用逻辑，按“单核配额百分比”工作；2 到 4 核机器默认 `核心数 * 20%`，其他机器默认 `25%`。在 systemd 环境会再写入 `CPUQuota` 做双重限制。
+- 内存：默认目标为总内存 `25%`，每轮占用 300 秒、休息 300 秒。会读取 Linux `/proc/meminfo` 或 BSD `sysctl` 指标，并按临时目录可用空间限幅。
+- 带宽：默认每 45 分钟触发一次，最长下载 6 分钟，速率按测速结果的 30%。自定义模式可直接指定 Mbps、时长、间隔。
+- 调度：systemd 环境安装 `cpu-limit.service`、`memory-limit.service`、`bandwidth_occupier.timer`；cron 环境安装 `oalive-cron-runner.sh` 监督器。
+- 安全：所有任务都有原子目录锁，避免并发重入；卸载时按锁和精确脚本路径停止任务，不再靠模糊进程名匹配。
+- 日志：日志写入 `/var/log/oalive`，单文件默认 128 KiB 自动轮转到 `.1`。
 
-### 待开发内容
+## 文件位置
 
-使用docker整合所有脚本，方便使用
+- 配置：`/etc/oalive/oalive.conf`
+- 启用状态：`/etc/oalive/enabled.conf`
+- 日志：`/var/log/oalive/`
+- 状态：`/var/lib/oalive/`
+- 运行锁：`/tmp/oalive-*.lock`
+- 运行脚本：`/usr/local/bin/cpu-limit.sh`、`/usr/local/bin/memory-limit.sh`、`/usr/local/bin/bandwidth_occupier.sh`、`/usr/local/bin/oalive-cron-runner.sh`
 
-### 友链
+## 卸载
 
-VPS融合怪测评脚本
+```sh
+sh oalive.sh --uninstall
+```
 
-https://github.com/spiritLHLS/ecs
+卸载会停止 systemd 服务或删除 cron 块，清理运行脚本、配置、状态文件和锁。重复卸载是安全的。
+
+## 自定义
+
+安装后可以编辑 `/etc/oalive/oalive.conf`，再重启对应调度：
+
+systemd:
+
+```sh
+systemctl daemon-reload
+systemctl restart cpu-limit.service memory-limit.service
+systemctl restart bandwidth_occupier.timer
+```
+
+cron:
+
+```sh
+sh /usr/local/bin/oalive-cron-runner.sh --check
+```
+
+更多手动定时示例见 [README_CRON.md](README_CRON.md)。英文版定时说明见 [README_CRON_EN.md](README_CRON_EN.md)。
+
+## 说明
+
+资源占用能否影响云厂商回收策略，没有确定保证。
+
+这个项目只提供可控、可卸载、低风险的占用任务，请按服务商条款和自己的实际用途自行判断。
+
+## 友链
+
+VPS融合怪测评项目：
+
+- Go版本: <https://github.com/oneclickvirt/ecs>
+- Shell版本: <https://github.com/spiritLHLS/ecs>
+
+一键虚拟化项目：
+
+- 国内: <https://virt.spiritlhl.net/>
+- 国际: <https://www.spiritlhl.net/>
 
 ## Stargazers over time
 
 [![Stargazers over time](https://starchart.cc/spiritLHLS/Oracle-server-keep-alive-script.svg)](https://starchart.cc/spiritLHLS/Oracle-server-keep-alive-script)
-
-### SEO
-
-甲骨文保活，甲骨文OCI保活，甲骨文资源占用，甲骨文免费服务器，甲骨文服务器闲置使用必备
-
-资源定期浪费，可用于 Oracle 甲骨文保活
-
-为了应对甲骨文最新回收机制而作的脚本
-
-
-
-

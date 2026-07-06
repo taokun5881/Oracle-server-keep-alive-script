@@ -1,99 +1,218 @@
-#!/bin/bash
+#!/bin/sh
 # by spiritlhl
 # from https://github.com/spiritLHLS/Oracle-server-keep-alive-script
 
-ulimit -u 10
-pid_file=/tmp/cpu-limit.pid
-if [ -e "${pid_file}" ]; then
-  # 如果 PID 文件存在，则读取其中的 PID
-  pid=$(cat "${pid_file}")
-  # 检查该 PID 是否对应一个正在运行的进程
-  if ps -p "${pid}" > /dev/null; then
-    echo "Error: Another instance of cpu-limit.sh is already running with PID ${pid}"
-    exit 1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+init_locale() {
+  utf8_locale=$(locale -a 2>/dev/null | awk 'tolower($0) ~ /utf-?8/ {print; exit}')
+  if [ -n "$utf8_locale" ]; then
+    export LC_ALL="$utf8_locale"
+    export LANG="$utf8_locale"
+    export LANGUAGE="$utf8_locale"
   fi
-  # 如果 PID 文件存在，但对应的进程已经停止运行，删除 PID 文件
-  rm "${pid_file}"
-fi
-echo $$ > "${pid_file}"
-
-# function calculate_primes() {
-#   size=$1
-#   for ((i=2;i<=$size;i++)); do
-#     for ((j=2;j<=i/2;j++)); do
-#       if [ $((i%j)) == 0 ]; then
-#         break
-#       fi
-#     done
-#     if [ $j -gt $((i/2)) ]; then
-#       echo $i &> /dev/null  
-#     fi
-#   done
-# }
-
-# low_main() {
-#   while true; do
-#     cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
-#     if (( $(echo "$cpu_usage < 15" | bc -l) )); then
-#       if [ $(( $(date +%s) % 2 )) == 0 ]; then
-#         size=$((size+10))
-#       else
-#         interval=$(echo "$interval - 0.5" | bc)
-#       fi
-#       if [ $size -lt $MIN_SIZE ]; then
-#         size=$MIN_SIZE
-#       fi
-#       if [ $(echo "$interval < $MIN_INTERVAL" | bc -l) -eq 1 ]; then
-#         interval=$MIN_INTERVAL
-#       fi
-#       calculate_primes $size &
-#     elif (( $(echo "$cpu_usage > 25" | bc -l) )); then
-#       if [ $(( $(date +%s) % 2 )) == 0 ]; then
-#         size=$((size-10))
-#       else
-#         interval=$(echo "$interval + 0.5" | bc)
-#       fi
-#       if [ $size -lt $MIN_SIZE ]; then
-#         size=$MIN_SIZE
-#       fi
-#       if [ $(echo "$interval < $MIN_INTERVAL" | bc -l) -eq 1 ]; then
-#         interval=$MIN_INTERVAL
-#       fi
-#     else
-#       echo ""
-#     fi
-#     sleep $interval
-#   done
-# }
-
-high_main(){
-  for ((i=0;i<$cores;i++))
-  do
-      {
-          dd if=/dev/zero of=/dev/null
-      } &
-  done
-  wait
 }
 
-arch=$(uname -m)
-cores=$(nproc)
-# if [ "$arch" = "armv7l" ] || [ "$arch" = "armv8" ] || [ "$arch" = "armv8l" ] || [ "$arch" = "aarch64" ] || [ "$arch" = "arm" ] ; then
-#   if [ $cores -eq 3 ] || [ $cores -eq 4 ]; then
-#     high_main
-#   else
-#     size=600
-#     interval=5
-#     MIN_SIZE=400
-#     MIN_INTERVAL=1
-#     low_main
-#   fi
-# else
-#   size=450
-#   interval=10
-#   MIN_SIZE=200
-#   MIN_INTERVAL=2
-#   low_main
-# fi
-high_main
-rm "${pid_file}"
+init_locale
+
+OALIVE_CONFIG=${OALIVE_CONFIG:-/etc/oalive/oalive.conf}
+[ -r "$OALIVE_CONFIG" ] && . "$OALIVE_CONFIG"
+
+LOG_DIR=${OALIVE_LOG_DIR:-/var/log/oalive}
+RUN_DIR=${OALIVE_RUN_DIR:-${TMPDIR:-/tmp}}
+LOG_FILE=${CPU_LOG_FILE:-$LOG_DIR/cpu-limit.log}
+LOCK_DIR=$RUN_DIR/oalive-cpu-limit.lock
+LOG_MAX_BYTES=${OALIVE_LOG_MAX_BYTES:-131072}
+CPU_QUOTA_PERCENT=${CPU_QUOTA_PERCENT:-${CPU_TARGET_PERCENT:-25}}
+CPU_CYCLE_SECONDS=${CPU_CYCLE_SECONDS:-10}
+
+worker_pids=
+
+is_uint() {
+  case ${1:-} in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+now() {
+  date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date
+}
+
+ensure_log_dir() {
+  [ -d "$LOG_DIR" ] || mkdir -p "$LOG_DIR" 2>/dev/null || LOG_FILE=/dev/null
+}
+
+rotate_log() {
+  [ "$LOG_FILE" = /dev/null ] && return 0
+  [ -f "$LOG_FILE" ] || return 0
+  size=$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)
+  is_uint "$size" || size=0
+  if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+    mv "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || : >"$LOG_FILE"
+  fi
+}
+
+log() {
+  ensure_log_dir
+  rotate_log
+  line="$(now) $*"
+  printf '%s\n' "$line"
+  [ "$LOG_FILE" = /dev/null ] || printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+pid_is_alive() {
+  pid=${1:-}
+  is_uint "$pid" || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+acquire_lock() {
+  [ -d "$RUN_DIR" ] || mkdir -p "$RUN_DIR" 2>/dev/null || true
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"$LOCK_DIR/pid"
+    return 0
+  fi
+
+  old_pid=
+  [ -r "$LOCK_DIR/pid" ] && old_pid=$(sed -n '1p' "$LOCK_DIR/pid" 2>/dev/null)
+  if pid_is_alive "$old_pid"; then
+    log "CPU占用已在运行，PID: $old_pid / CPU occupier is already running, PID: $old_pid"
+    exit 0
+  fi
+
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"$LOCK_DIR/pid"
+    return 0
+  fi
+
+  log "无法创建CPU锁目录 / Failed to create CPU lock directory: $LOCK_DIR"
+  exit 1
+}
+
+cleanup() {
+  trap - INT TERM EXIT
+  for pid in $worker_pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+  for pid in $worker_pids; do
+    wait "$pid" 2>/dev/null || true
+  done
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+}
+
+terminate() {
+  cleanup
+  exit 0
+}
+
+get_cores() {
+  cores=
+  if command -v getconf >/dev/null 2>&1; then
+    cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  if ! is_uint "$cores" || [ "$cores" -lt 1 ]; then
+    cores=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  fi
+  if ! is_uint "$cores" || [ "$cores" -lt 1 ]; then
+    cores=$(awk '/^processor[[:space:]]*:/{n++} END{print n+0}' /proc/cpuinfo 2>/dev/null || true)
+  fi
+  if ! is_uint "$cores" || [ "$cores" -lt 1 ]; then
+    cores=1
+  fi
+  printf '%s\n' "$cores"
+}
+
+normalize_settings() {
+  is_uint "$CPU_QUOTA_PERCENT" || CPU_QUOTA_PERCENT=25
+  is_uint "$CPU_CYCLE_SECONDS" || CPU_CYCLE_SECONDS=10
+  [ "$CPU_QUOTA_PERCENT" -gt 0 ] || CPU_QUOTA_PERCENT=25
+  [ "$CPU_CYCLE_SECONDS" -ge 2 ] || CPU_CYCLE_SECONDS=10
+}
+
+full_worker() {
+  trap 'exit 0' INT TERM
+  if command -v yes >/dev/null 2>&1; then
+    exec yes >/dev/null
+  fi
+  while :; do :; done
+}
+
+throttle_worker() {
+  percent=$1
+  cycle=$2
+  busy=$((cycle * percent / 100))
+  [ "$busy" -ge 1 ] || busy=1
+  [ "$busy" -le "$cycle" ] || busy=$cycle
+  idle=$((cycle - busy))
+  load_pid=
+  trap 'kill "$load_pid" 2>/dev/null || true; exit 0' INT TERM
+
+  while :; do
+    if command -v yes >/dev/null 2>&1; then
+      yes >/dev/null &
+    else
+      dd if=/dev/zero of=/dev/null bs=1048576 count=1024 >/dev/null 2>&1 &
+    fi
+    load_pid=$!
+    sleep "$busy"
+    kill "$load_pid" 2>/dev/null || true
+    wait "$load_pid" 2>/dev/null || true
+    load_pid=
+    [ "$idle" -gt 0 ] && sleep "$idle"
+  done
+}
+
+start_workers() {
+  cores=$(get_cores)
+  max_quota=$((cores * 100))
+  [ "$CPU_QUOTA_PERCENT" -le "$max_quota" ] || CPU_QUOTA_PERCENT=$max_quota
+
+  full=$((CPU_QUOTA_PERCENT / 100))
+  partial=$((CPU_QUOTA_PERCENT % 100))
+  started=0
+
+  while [ "$started" -lt "$full" ] && [ "$started" -lt "$cores" ]; do
+    full_worker &
+    worker_pids="$worker_pids $!"
+    started=$((started + 1))
+  done
+
+  if [ "$partial" -gt 0 ] && [ "$started" -lt "$cores" ]; then
+    throttle_worker "$partial" "$CPU_CYCLE_SECONDS" &
+    worker_pids="$worker_pids $!"
+    started=$((started + 1))
+  fi
+
+  if [ "$started" -eq 0 ]; then
+    log "CPU占用目标为0，保持空闲 / CPU target is 0, staying idle"
+  else
+    log "CPU占用已启动，核心数=$cores, 目标=${CPU_QUOTA_PERCENT}%单核配额 / CPU occupier started, cores=$cores, target=${CPU_QUOTA_PERCENT}% of one-core quota"
+  fi
+}
+
+case ${1:-} in
+  --help|-h)
+    printf '%s\n' "Usage: sh cpu-limit.sh"
+    printf '%s\n' "配置 / Config: CPU_QUOTA_PERCENT, CPU_CYCLE_SECONDS, OALIVE_LOG_DIR"
+    exit 0
+    ;;
+  --check)
+    normalize_settings
+    printf '%s\n' "CPU script OK / CPU脚本检查通过"
+    exit 0
+    ;;
+esac
+
+normalize_settings
+acquire_lock
+trap terminate INT TERM
+trap cleanup EXIT
+start_workers
+
+wait
+rc=$?
+log "CPU工作进程已退出，返回码=$rc / CPU worker exited, rc=$rc"
+exit "$rc"
