@@ -22,6 +22,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
   printf '%s\n' "== shellcheck =="
   shellcheck -s sh -e SC1090,SC2329 $scripts
+  shellcheck -s sh -e SC1091,SC2034,SC2329 scripts/test-installer-download.sh
 fi
 
 printf '%s\n' "== runtime check commands =="
@@ -30,6 +31,17 @@ sh memory-limit.sh --check
 sh bandwidth_occupier.sh --check
 sh oalive-cron-runner.sh --check
 sh oalive.sh --status >/dev/null
+
+printf '%s\n' "== remote installer download regression =="
+sh scripts/test-installer-download.sh
+
+printf '%s\n' "== source reference check =="
+legacy_source_host=$(printf '%s%s' 'git' 'lab.com')
+if grep -n "$legacy_source_host/spiritysdx/Oracle-server-keep-alive-script" \
+  README.md README_EN.md README_CRON.md README_CRON_EN.md oalive.sh; then
+  printf '%s\n' "Legacy source references must be migrated to GitHub Raw" >&2
+  exit 1
+fi
 
 printf '%s\n' "== unsafe pattern scan =="
 if grep -En '#!/bin/bash|#!/usr/bin/env bash|\\[\\[|\\]\\]|grep -P|shuf|nproc|fallocate|ExecStart=/bin/bash|/bin/bash|pgrep dd|ps -ef|kill \\$\\(' $scripts $units >/tmp/oalive-check-patterns.$$ 2>/dev/null; then

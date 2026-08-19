@@ -2,11 +2,11 @@
 # by spiritlhl
 # from https://github.com/spiritLHLS/Oracle-server-keep-alive-script
 
-ver="2026.06.01.00.00"
+ver="2026.08.18.00.00"
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-BASE_URL=${OALIVE_BASE_URL:-https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main}
+BASE_URL=${OALIVE_BASE_URL:-https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main}
 INSTALL_DIR=${OALIVE_INSTALL_DIR:-/usr/local/bin}
 CONFIG_DIR=${OALIVE_CONFIG_DIR:-/etc/oalive}
 CONFIG_FILE=${OALIVE_CONFIG:-$CONFIG_DIR/oalive.conf}
@@ -286,19 +286,19 @@ refresh_paths_from_config() {
 }
 
 download_to() {
-  url=$1
-  dest=$2
+  download_url=$1
+  download_dest=$2
   is_uint "$DOWNLOAD_TIMEOUT" || DOWNLOAD_TIMEOUT=30
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 10 --max-time "$DOWNLOAD_TIMEOUT" "$url" -o "$dest"
+    curl -fsSL --connect-timeout 10 --max-time "$DOWNLOAD_TIMEOUT" "$download_url" -o "$download_dest"
     return $?
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -q --timeout=10 --tries=3 -O "$dest" "$url"
+    wget -q --timeout=10 --tries=3 -O "$download_dest" "$download_url"
     return $?
   fi
   if command -v fetch >/dev/null 2>&1; then
-    fetch -q -T "$DOWNLOAD_TIMEOUT" -o "$dest" "$url"
+    fetch -q -T "$DOWNLOAD_TIMEOUT" -o "$download_dest" "$download_url"
     return $?
   fi
   return 1
@@ -868,18 +868,20 @@ main_menu() {
   esac
 }
 
-setup_script_dir
-init_locale
-detect_os
-detect_package_manager || true
-detect_scheduler
+if [ "${OALIVE_LIBRARY_MODE:-0}" != 1 ]; then
+  setup_script_dir
+  init_locale
+  detect_os
+  detect_package_manager || true
+  detect_scheduler
 
-case ${1:-} in
-  --install|install) install_all ;;
-  --uninstall|uninstall) uninstall ;;
-  --status|status) status ;;
-  --update|update) checkver ;;
-  --help|-h|help) usage ;;
-  '') main_menu ;;
-  *) usage; exit 1 ;;
-esac
+  case ${1:-} in
+    --install|install) install_all ;;
+    --uninstall|uninstall) uninstall ;;
+    --status|status) status ;;
+    --update|update) checkver ;;
+    --help|-h|help) usage ;;
+    '') main_menu ;;
+    *) usage; exit 1 ;;
+  esac
+fi

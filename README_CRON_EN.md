@@ -8,10 +8,10 @@ Use this document only when you do not want the one-click installer to manage sc
 Download and install runtime scripts:
 
 ```sh
-curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/cpu-limit.sh -o /usr/local/bin/cpu-limit.sh
-curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/memory-limit.sh -o /usr/local/bin/memory-limit.sh
-curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/bandwidth_occupier.sh -o /usr/local/bin/bandwidth_occupier.sh
-curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive-cron-runner.sh -o /usr/local/bin/oalive-cron-runner.sh
+curl -fsSL https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main/cpu-limit.sh -o /usr/local/bin/cpu-limit.sh
+curl -fsSL https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main/memory-limit.sh -o /usr/local/bin/memory-limit.sh
+curl -fsSL https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main/bandwidth_occupier.sh -o /usr/local/bin/bandwidth_occupier.sh
+curl -fsSL https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main/oalive-cron-runner.sh -o /usr/local/bin/oalive-cron-runner.sh
 chmod +x /usr/local/bin/cpu-limit.sh /usr/local/bin/memory-limit.sh /usr/local/bin/bandwidth_occupier.sh /usr/local/bin/oalive-cron-runner.sh
 mkdir -p /etc/oalive /var/log/oalive /var/lib/oalive
 ```

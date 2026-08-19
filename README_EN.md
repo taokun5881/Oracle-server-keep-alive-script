@@ -21,7 +21,7 @@ Platform differences are handled defensively. For example, BSD uses cron instead
 Run with `sh`:
 
 ```sh
-curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh -o oalive.sh
+curl -fsSL https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main/oalive.sh -o oalive.sh
 chmod +x oalive.sh
 sh oalive.sh
 ```
@@ -29,7 +29,7 @@ sh oalive.sh
 Run with `bash`:
 
 ```sh
-curl -fsSL https://gitlab.com/spiritysdx/Oracle-server-keep-alive-script/-/raw/main/oalive.sh -o oalive.sh
+curl -fsSL https://raw.githubusercontent.com/spiritLHLS/Oracle-server-keep-alive-script/main/oalive.sh -o oalive.sh
 chmod +x oalive.sh
 bash oalive.sh
 ```
