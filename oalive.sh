@@ -2,7 +2,7 @@
 # by spiritlhl
 # from https://github.com/spiritLHLS/Oracle-server-keep-alive-script
 
-ver="2026.08.18.00.00"
+ver="2026.08.25.09.36"
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
@@ -35,6 +35,7 @@ BANDWIDTH_RATE_MBPS=auto
 BANDWIDTH_DEFAULT_MBPS=10
 BANDWIDTH_SPEEDTEST_COUNT=10
 SPEEDTEST_GO_BIN=/etc/speedtest-cli/speedtest-go
+SPEEDTEST_GO_RELEASE_VERSION=1.8.1
 SCHEDULER=auto
 PKG_MANAGER=
 OS_NAME=
@@ -542,7 +543,10 @@ service_status() {
 
 install_speedtest_go_linux() {
   [ "$OS_KERNEL" = Linux ] || return 1
-  [ -x "$SPEEDTEST_GO_BIN" ] && return 0
+  if [ -x "$SPEEDTEST_GO_BIN" ] &&
+      "$SPEEDTEST_GO_BIN" --version 2>&1 | grep -Fq "v$SPEEDTEST_GO_RELEASE_VERSION"; then
+    return 0
+  fi
   command -v tar >/dev/null 2>&1 || pkg_install tar >/dev/null 2>&1 || true
   arch=$(uname -m 2>/dev/null || echo x86_64)
   case $arch in
@@ -556,7 +560,7 @@ install_speedtest_go_linux() {
     *) return 1 ;;
   esac
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/oalive-speedtest.XXXXXX") || return 1
-  url="https://github.com/showwin/speedtest-go/releases/download/v1.6.0/speedtest-go_1.6.0_Linux_${asset_arch}.tar.gz"
+  url="https://github.com/showwin/speedtest-go/releases/download/v${SPEEDTEST_GO_RELEASE_VERSION}/speedtest-go_${SPEEDTEST_GO_RELEASE_VERSION}_Linux_${asset_arch}.tar.gz"
   if download_to "$url" "$tmpdir/speedtest-go.tar.gz" && mkdir -p "$(dirname "$SPEEDTEST_GO_BIN")" && tar -zxf "$tmpdir/speedtest-go.tar.gz" -C "$tmpdir"; then
     speedtest_path=$(find "$tmpdir" -type f -name speedtest-go 2>/dev/null | sed -n '1p')
     if [ -n "$speedtest_path" ]; then
@@ -572,7 +576,9 @@ install_speedtest_go_linux() {
 
 ensure_speedtest_tool() {
   command -v speedtest-cli >/dev/null 2>&1 && return 0
-  [ -x "$SPEEDTEST_GO_BIN" ] && return 0
+  if [ -x "$SPEEDTEST_GO_BIN" ]; then
+    install_speedtest_go_linux && return 0
+  fi
   command -v speedtest-go >/dev/null 2>&1 && return 0
 
   pkg_install speedtest-cli >/dev/null 2>&1 && command -v speedtest-cli >/dev/null 2>&1 && return 0
